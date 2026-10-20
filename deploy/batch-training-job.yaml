@@ -1,0 +1,105 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: team-b-lora-batch-
+  namespace: team-b-lora
+  labels:
+    app.kubernetes.io/name: team-b-lora
+    app.kubernetes.io/component: batch-training
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: team-b-lora
+        app.kubernetes.io/component: batch-training
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      tolerations:
+        - key: g5-gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: g6e-gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: training
+          image: registry.redhat.io/rhoai/odh-workbench-jupyter-pytorch-cuda-py312-rhel9@sha256:f476e56ad00faaad5f2e26010f633233db2d4b299d7c5281e2f4ac46949b531b
+          imagePullPolicy: IfNotPresent
+          workingDir: /workspace/project
+          command:
+            - /bin/bash
+            - -lc
+            - |-
+              set -euo pipefail
+              for attempt in {1..30}; do
+                if test -w /workspace; then break; fi
+                sleep 2
+              done
+              if ! test -w /workspace; then
+                id
+                stat -c '%A %u:%g %n' /workspace
+                echo 'Workspace PVC is not writable by the project-assigned OpenShift user.' >&2
+                exit 1
+              fi
+              mkdir -p /workspace/project/data /workspace/project/scripts
+              cp /project-source/requirements.txt /workspace/project/requirements.txt
+              cp /project-source/prepare_data.py /workspace/project/data/prepare_data.py
+              cp /project-source/run_workflow.py /workspace/project/scripts/run_workflow.py
+              cd /workspace/project
+              python -m pip install --no-cache-dir -r requirements.txt
+              python data/prepare_data.py
+              python scripts/run_workflow.py
+              cat "$(find outputs -name metrics.json -type f -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
+          env:
+            - name: HF_HOME
+              value: /workspace/.cache/huggingface
+            - name: PIP_CERT
+              value: /etc/pki/tls/custom-certs/ca-bundle.crt
+            - name: REQUESTS_CA_BUNDLE
+              value: /etc/pki/tls/custom-certs/ca-bundle.crt
+            - name: SSL_CERT_FILE
+              value: /etc/pki/tls/custom-certs/ca-bundle.crt
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: project-source
+              mountPath: /project-source
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+            - name: trusted-ca
+              mountPath: /etc/pki/tls/custom-certs/ca-bundle.crt
+              subPath: ca-bundle.crt
+              readOnly: true
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: team-b-lora-batch-workspace
+        - name: project-source
+          configMap:
+            name: team-b-lora-batch-source
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: trusted-ca
+          configMap:
+            name: workbench-trusted-ca-bundle
+            items:
+              - key: ca-bundle.crt
+                path: ca-bundle.crt
+            optional: true

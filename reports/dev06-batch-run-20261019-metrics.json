@@ -1,0 +1,102 @@
+{
+  "model_path": "Qwen/Qwen2.5-1.5B-Instruct",
+  "gpu": "NVIDIA A10G",
+  "training_hub_version": "0.9.2",
+  "training_examples": 24,
+  "evaluation_examples": 6,
+  "training_parameters": {
+    "num_epochs": 2,
+    "learning_rate": 0.0002,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "max_seq_len": 512,
+    "qlora": false
+  },
+  "training_seconds": 56.86,
+  "base_model": {
+    "correct": 1,
+    "total": 6,
+    "exact_match": 0.16666666666666666,
+    "predictions": [
+      {
+        "question": "How many people work in Support?",
+        "expected_sql": "SELECT COUNT(*) FROM employees WHERE department = 'Support';",
+        "predicted_sql": "```sql\nSELECT COUNT(*) \nFROM employees \nWHERE department = 'Support';\n```",
+        "exact_match": true
+      },
+      {
+        "question": "What is the mean pay for Design employees?",
+        "expected_sql": "SELECT AVG(salary) FROM employees WHERE department = 'Design';",
+        "predicted_sql": "```sql\nSELECT AVG(salary) AS average_salary\nFROM employees e\nWHERE e.department = 'Design';\n```",
+        "exact_match": false
+      },
+      {
+        "question": "Return the five highest-paid employees with their salaries.",
+        "expected_sql": "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 5;",
+        "predicted_sql": "```sql\nSELECT id, name, salary \nFROM employees \nORDER BY salary DESC \nLIMIT 5;\n```",
+        "exact_match": false
+      },
+      {
+        "question": "What is the combined budget of projects owned by employees in Engineering?",
+        "expected_sql": "SELECT SUM(p.budget) FROM projects AS p JOIN employees AS e ON p.owner_id = e.id WHERE e.department = 'Engineering';",
+        "predicted_sql": "```sql\nSELECT SUM(projects.budget) AS total_budget\nFROM projects\nJOIN employees ON projects.owner_id = employees.id\nWHERE employees.department = 'Engineering';\n```",
+        "exact_match": false
+      },
+      {
+        "question": "Show the number of projects for each owner.",
+        "expected_sql": "SELECT owner_id, COUNT(*) FROM projects GROUP BY owner_id;",
+        "predicted_sql": "```sql\nSELECT \n    owner_id,\n    COUNT(*) AS project_count\nFROM \n    projects\nGROUP BY \n    owner_id;\n```",
+        "exact_match": false
+      },
+      {
+        "question": "List employee names in Seattle who work in Operations.",
+        "expected_sql": "SELECT name FROM employees WHERE location = 'Seattle' AND department = 'Operations';",
+        "predicted_sql": "```sql\nSELECT e.name \nFROM employees e \nJOIN projects p ON e.id = p.owner_id \nWHERE e.location = 'Seattle' AND e.department = 'Operations';\n```",
+        "exact_match": false
+      }
+    ]
+  },
+  "lora_model": {
+    "correct": 3,
+    "total": 6,
+    "exact_match": 0.5,
+    "predictions": [
+      {
+        "question": "How many people work in Support?",
+        "expected_sql": "SELECT COUNT(*) FROM employees WHERE department = 'Support';",
+        "predicted_sql": "SELECT COUNT(*) FROM employees WHERE department = 'Support';",
+        "exact_match": true
+      },
+      {
+        "question": "What is the mean pay for Design employees?",
+        "expected_sql": "SELECT AVG(salary) FROM employees WHERE department = 'Design';",
+        "predicted_sql": "SELECT AVG(salary) FROM employees WHERE department = 'Design';",
+        "exact_match": true
+      },
+      {
+        "question": "Return the five highest-paid employees with their salaries.",
+        "expected_sql": "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 5;",
+        "predicted_sql": "SELECT * FROM employees ORDER BY salary DESC LIMIT 5;",
+        "exact_match": false
+      },
+      {
+        "question": "What is the combined budget of projects owned by employees in Engineering?",
+        "expected_sql": "SELECT SUM(p.budget) FROM projects AS p JOIN employees AS e ON p.owner_id = e.id WHERE e.department = 'Engineering';",
+        "predicted_sql": "SELECT SUM(budget) FROM projects WHERE owner_id IN (SELECT id FROM employees WHERE department = 'Engineering');",
+        "exact_match": false
+      },
+      {
+        "question": "Show the number of projects for each owner.",
+        "expected_sql": "SELECT owner_id, COUNT(*) FROM projects GROUP BY owner_id;",
+        "predicted_sql": "SELECT COUNT(owner_id) AS project_count, owner_id FROM projects GROUP BY owner_id;",
+        "exact_match": false
+      },
+      {
+        "question": "List employee names in Seattle who work in Operations.",
+        "expected_sql": "SELECT name FROM employees WHERE location = 'Seattle' AND department = 'Operations';",
+        "predicted_sql": "SELECT name FROM employees WHERE location = 'Seattle' AND department = 'Operations';",
+        "exact_match": true
+      }
+    ]
+  }
+}
