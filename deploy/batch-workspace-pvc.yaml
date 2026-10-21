@@ -1,11 +1,12 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: team-b-lora-batch-workspace
+  name: __WORKSPACE_PVC__
   namespace: team-b-lora
   labels:
     app.kubernetes.io/name: team-b-lora
     app.kubernetes.io/component: batch-training
+    app.kubernetes.io/run-id: "__RUN_ID__"
 spec:
   accessModes:
     - ReadWriteOnce

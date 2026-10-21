@@ -1,4 +1,4 @@
-training-hub[lora]
+training-hub[lora]==0.9.2
 # The configured RHOAI Python index's Training Hub extra currently installs
 # Unsloth without the Zoo package required by the LoRA backend.
 unsloth-zoo>=2026.6.7

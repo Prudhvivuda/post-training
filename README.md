@@ -10,13 +10,15 @@ The project is designed to run from a GPU-enabled RHOAI Workbench in the Team B 
 2. Evaluate the base model on the held-out questions.
 3. Fine-tune with Red Hat Training Hub `lora_sft`.
 4. Evaluate the returned adapter model on the same questions.
-5. Save the adapter/checkpoints and `metrics.json` under the selected output directory.
+5. Save run configuration, resumable Trainer checkpoints, the adapter, and `metrics.json` under the run directory.
+
+The `smoke` profile uses the original 24-example training set for 2 epochs. The `contention` profile repeats those examples 8 times and trains for 5 epochs, producing a longer GPU workload for scheduling experiments. Both save full Trainer checkpoints every 10 steps by default.
 
 The dataset uses fictional `employees` and `projects` tables. It is a small workflow and scheduling demo, not a meaningful SQL benchmark. Replace or expand it with a reviewed domain dataset after the RHOAI workflow is proven.
 
 ## RHOAI target
 
-The default model is `Qwen/Qwen2.5-1.5B-Instruct`, using one GPU. The Training Hub support matrix includes Qwen 2.5 architectures for LoRA SFT, and its current quick example uses this model family. RHOAI 3.5's customization guide describes Training Hub LoRA/QLoRA and the `Training | Jupyter | PyTorch | CUDA | Python` Workbench image. Check the installed RHOAI version, enabled components, image availability, and Team B quota on `dev06` before creating the Workbench.
+The default model is `Qwen/Qwen2.5-1.5B-Instruct`, using one GPU. The workflow pins Training Hub to `0.9.2`, the version recorded in the verified RHOAI 3.5.1 run, so the checkpoint bridge and runtime stay aligned with that image. The Training Hub support matrix includes Qwen 2.5 architectures for LoRA SFT, and its quick example uses this model family. RHOAI 3.5's customization guide describes Training Hub LoRA/QLoRA and the `Training | Jupyter | PyTorch | CUDA | Python` Workbench image. Check the installed RHOAI version, enabled components, image availability, and Team B quota on `dev06` before creating the Workbench.
 
 References:
 
@@ -94,20 +96,44 @@ Deploy this first version inside the **Team B RHOAI Data Science Project**. The 
 
 ### Submit Team B as a batch workload
 
-For the low-SLA batch use case, submit the repeatable Kubernetes Job from a local terminal after logging in to `dev06` and creating the project:
+For the low-SLA batch use case, submit a Kubernetes Job from a local terminal after logging in to `dev06` and creating the project. Each new run receives a unique PVC, source ConfigMap, and run ID, so concurrent jobs do not share their checkpoint workspace:
 
 ```bash
 cd /Users/pvuda/Code/post-training/team-b-lora
-bash scripts/submit-batch-job.sh
+bash scripts/submit-batch-job.sh --profile smoke
 oc get jobs,pods -n team-b-lora -l app.kubernetes.io/component=batch-training
 oc logs -f job/<job-name> -n team-b-lora
 ```
 
-The launcher snapshots the workflow source into a ConfigMap, provisions a separate 20 GiB PVC, and creates a GPU Job using the RHOAI PyTorch image. The Job installs the requirements, generates its data, evaluates the base model, runs LoRA SFT, and prints the metrics JSON to its logs. The adapter, Hugging Face cache, and metrics persist on PVC `team-b-lora-batch-workspace` under `/workspace/project/outputs`. Submit another run after the active Job completes; the launcher prevents concurrent jobs from mounting the single-writer PVC.
+For a longer contention workload, choose `contention`:
+
+```bash
+bash scripts/submit-batch-job.sh --profile contention
+```
+
+The launcher prints the run ID and PVC name. The Job snapshots the workflow source into a run-specific ConfigMap, creates a 20 GiB run-specific PVC, then installs requirements, creates deterministic data, evaluates the base model, runs LoRA SFT, and prints `metrics.json` to its logs. The run directory includes `run-config.json`, `run-state.json`, `base-evaluation.json`, checkpoints, and final metrics.
+
+If the Job is preempted, Python runs as the container's main process and handles `SIGTERM` at the next optimizer step. It requests a full Trainer checkpoint and exits with code 75 so the Job records the interruption. The workflow also checks for an existing run config on pod replacement: it resumes the latest full checkpoint when one is available and fails clearly if the interruption happened before the first resumable checkpoint. You can also submit a new Job manually with the same run ID to reuse the original PVC and source snapshot:
+
+```bash
+bash scripts/submit-batch-job.sh --resume <run-id>
+```
+
+The resume path checks that the saved model, Trainer state, and optimizer checkpoint exist and that the training configuration and dataset hashes match. It restores the latest checkpoint through Transformers' `resume_from_checkpoint` argument. If the preemption arrives before a full checkpoint is saved, the workflow reports that the run cannot be resumed; start a new run in that case.
+
+Training Hub wraps the underlying TRL Trainer call, so the workflow installs a scoped runtime hook to attach the signal callback and forward the resume path. The hook restores the original methods after each training call and fails fast if the installed TRL Trainer lacks the resume argument.
+
+After a run completes or is interrupted, collect OpenShift-side scheduling evidence (Job/Pod timestamps, scheduler, node, resource requests, and container image) to a local ignored report:
+
+```bash
+bash scripts/collect-batch-metrics.sh <run-id>
+```
+
+This writes `reports/cluster-runs/<run-id>.json`. The collector calculates pod creation-to-scheduling and scheduling-to-container-start intervals. It does not change cluster resources. The prior shared PVC `team-b-lora-batch-workspace` is left intact; new runs use run-specific PVCs.
 
 ### What this proves
 
-This is the repeatable first RHOAI workload baseline, launched from a GPU Workbench. It does **not** yet prove Run:ai project annotation injection, quota borrowing/preemption, batch `Job`/Kubeflow Trainer scheduling, or concurrent Team A inference behavior. Once the cluster's Run:ai injection mechanism is agreed, the same script can be packaged as a batch workload for those tests.
+This is the repeatable first RHOAI workload baseline, launched from a GPU Workbench or a batch Job. The repo now supports independent batch workspaces, a longer contention profile, periodic full Trainer checkpoints, graceful checkpoint-on-termination, manual Job resubmission from the latest full checkpoint, run provenance, and a local cluster-evidence collector. These code paths still need a dev06 run to establish that the installed Training Hub/TRL stack resumes successfully and that the scheduler sends a catchable termination signal with enough grace time. Run:ai project annotation injection, quota borrowing/preemption, and Team A inference contention still depend on cluster integration and the Team A workload.
 
 ## Verified `dev06` run (2026-10-19)
 
