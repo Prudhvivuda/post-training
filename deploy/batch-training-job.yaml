@@ -7,8 +7,10 @@ metadata:
     app.kubernetes.io/name: team-b-lora
     app.kubernetes.io/component: batch-training
     app.kubernetes.io/run-id: "__RUN_ID__"
+    priorityClassName: low
+    kai.scheduler/preemptibility: preemptible
 spec:
-  backoffLimit: 0
+  backoffLimit: 3
   activeDeadlineSeconds: 3600
   template:
     metadata:
@@ -16,11 +18,16 @@ spec:
         app.kubernetes.io/name: team-b-lora
         app.kubernetes.io/component: batch-training
         app.kubernetes.io/run-id: "__RUN_ID__"
+        priorityClassName: low
+        kai.scheduler/preemptibility: preemptible
     spec:
-      schedulerName: default-scheduler
+      schedulerName: runai-scheduler
       restartPolicy: Never
       enableServiceLinks: false
       terminationGracePeriodSeconds: 120
+      securityContext:
+        fsGroup: __FS_GROUP__
+        fsGroupChangePolicy: OnRootMismatch
       tolerations:
         - key: g5-gpu
           operator: Equal
@@ -34,7 +41,7 @@ spec:
         - name: training
           image: registry.redhat.io/rhoai/odh-workbench-jupyter-pytorch-cuda-py312-rhel9@sha256:f476e56ad00faaad5f2e26010f633233db2d4b299d7c5281e2f4ac46949b531b
           imagePullPolicy: IfNotPresent
-          workingDir: /workspace/project
+          workingDir: /workspace
           command:
             - /bin/bash
             - -lc
@@ -74,7 +81,7 @@ spec:
             - name: WORKLOAD_IMAGE
               value: "registry.redhat.io/rhoai/odh-workbench-jupyter-pytorch-cuda-py312-rhel9@sha256:f476e56ad00faaad5f2e26010f633233db2d4b299d7c5281e2f4ac46949b531b"
             - name: SCHEDULER_NAME
-              value: default-scheduler
+              value: runai-scheduler
             - name: POD_NAME
               valueFrom:
                 fieldRef:

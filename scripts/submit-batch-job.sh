@@ -62,6 +62,20 @@ if ! oc get namespace "$PROJECT_NAME" >/dev/null 2>&1; then
   exit 1
 fi
 
+FS_GROUP_RANGE="$(oc get namespace "$PROJECT_NAME" \
+  -o go-template='{{index .metadata.annotations "openshift.io/sa.scc.supplemental-groups"}}')"
+if [[ -z "$FS_GROUP_RANGE" ]]; then
+  FS_GROUP_RANGE="$(oc get namespace "$PROJECT_NAME" \
+    -o go-template='{{index .metadata.annotations "openshift.io/sa.scc.uid-range"}}')"
+fi
+FS_GROUP_BLOCK="${FS_GROUP_RANGE%%,*}"
+if [[ ! "$FS_GROUP_BLOCK" =~ ^([0-9]+)(/[0-9]+|-[0-9]+)?$ ]]; then
+  printf 'Could not read a valid OpenShift supplemental group range from project %s.\n' \
+    "$PROJECT_NAME" >&2
+  exit 1
+fi
+FS_GROUP="${BASH_REMATCH[1]}"
+
 if [[ -n "$RESUME_RUN_ID" ]]; then
   RUN_ID="$RESUME_RUN_ID"
 else
@@ -155,12 +169,14 @@ JOB_NAME="$(sed \
   -e "s/__GIT_COMMIT__/${GIT_COMMIT}/g" \
   -e "s/__GIT_WORKTREE_DIRTY__/${GIT_WORKTREE_DIRTY}/g" \
   -e "s/__WORKSPACE_PVC__/${WORKSPACE_PVC}/g" \
+  -e "s/__FS_GROUP__/${FS_GROUP}/g" \
   -e "s/__SOURCE_CONFIGMAP__/${SOURCE_CONFIGMAP}/g" \
   "$ROOT_DIR/deploy/batch-training-job.yaml" | oc create -n "$PROJECT_NAME" -f - \
     -o jsonpath='{.metadata.name}')"
 
 printf 'Created Job %s for run %s in project %s.\n' "$JOB_NAME" "$RUN_ID" "$PROJECT_NAME"
 printf 'Profile: %s; workspace PVC: %s.\n' "$PROFILE" "$WORKSPACE_PVC"
+printf 'Scheduler: runai-scheduler; priority: low; preemptible: true; fsGroup: %s.\n' "$FS_GROUP"
 printf 'Follow logs: oc logs -f job/%s -n %s\n' "$JOB_NAME" "$PROJECT_NAME"
 printf 'After completion or preemption, collect scheduling evidence with:\n'
 printf '  bash scripts/collect-batch-metrics.sh %s\n' "$RUN_ID"
