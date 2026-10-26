@@ -151,7 +151,7 @@ This writes `reports/cluster-runs/<run-id>.json`. The collector calculates pod c
 
 ### What this proves
 
-The project is mapped to Run:ai on `dev06`; the default batch mode targets the Run:ai scheduler with explicit low priority and preemptibility, and `project-defaults` mode is available to inspect what the project integration supplies. The Oct 22 run verified Run:ai scheduling, a graceful signal-triggered checkpoint, and manual resume to completion on the same PVC. That validates checkpoint recovery for this workload; it does not prove scheduler-initiated cross-project reclaim. That still requires a coordinated workload in another Run:ai project. The Run:ai dashboard also displayed a cluster prerequisite warning while recognizing and allocating the Team B Job, so the cluster warning needs follow-up before treating the integration as production-ready.
+The project is mapped to Run:ai on `dev06`; the default batch mode targets the Run:ai scheduler with explicit low priority and preemptibility. The `project-defaults` smoke run confirmed that the admitted Pod used `runai-scheduler` even though the Job template omitted `schedulerName` and workload-level Run:ai priority/preemptibility labels. This verifies scheduler selection through the namespace integration for a native RHOAI-project Job; it does not yet establish Run:ai UI quota metering or the effective workload-type priority/preemptibility. The Oct 22 run verified graceful checkpointing and manual resume on the same PVC. Neither run proves scheduler-initiated cross-project reclaim, which requires a coordinated workload in another Run:ai project. The dashboard showed a cluster prerequisite warning in the earlier verification; platform-owner follow-up remains necessary before treating the integration as production-ready.
 
 ## Verified `dev06` run (2026-10-19)
 
@@ -173,6 +173,13 @@ The project is mapped to Run:ai on `dev06`; the default batch mode targets the R
 - `deploy/batch-training-job.yaml` requests `runai-scheduler`, labels the Job and its Pod `low` / `preemptible`, and uses the OpenShift namespace-assigned group for writable run-specific PVCs. The container starts in `/workspace` so the non-root process creates its own project directory.
 - The dashboard recognized the Team B Job and showed 1/1 GPU allocated, but also displayed “Prerequisites are missing from cluster ai-dev06.” The historical Oct 19 Workbench and batch runs used `default-scheduler`; neither is evidence for the new mapping or Run:ai scheduling behavior.
 - In the Oct 22 verification, the RHOAI Notebook Workbench was running on `default-scheduler`; only the batch Job path was changed and verified with Run:ai. It was left running to preserve the active session. Recheck its current state before a demo, and include it in a scheduler comparison only after agreeing how an interactive workspace should be prioritized and reclaimed.
+
+## Verified project-defaults batch mode (2026-10-25)
+
+- Submitted smoke run `run-20261026t021217z-5731` with `--runai-mode project-defaults`. The generated Job omitted `schedulerName`, `priorityClassName`, and `kai.scheduler/preemptibility`; its Job and Pod metadata had no Run:ai workload annotations or labels.
+- The namespace still had `runai/queue=team-b-lora` and `runai/enforce-scheduler-name=true`. The stored Job template showed `default-scheduler`, but the admitted Pod showed `runai-scheduler`, was scheduled on an NVIDIA A10G, and completed successfully. This shows the namespace integration selected the Run:ai scheduler at Pod admission despite the workload template having no explicit scheduler.
+- The run completed 48 steps; Training Hub reported 36.09 seconds. Base exact match was 1/6 and LoRA exact match was 0/6 on the tiny synthetic evaluation set. These are execution metrics, not a quality claim.
+- Scheduling and metadata evidence is saved locally in ignored `reports/cluster-runs/run-20261026t021217z-5731.json`. The Run:ai dashboard was not inspected because its SSO flow requires the user to complete Red Hat internal sign-in. Quota metering and workload-type priority/preemptibility still need UI verification.
 
 ## Verified Run:ai checkpoint recovery (2026-10-22)
 
