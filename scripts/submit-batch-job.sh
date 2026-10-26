@@ -6,16 +6,20 @@ PROJECT_NAME="team-b-lora"
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="smoke"
 PROFILE_EXPLICIT=false
+RUNAI_MODE="explicit"
+RUNAI_MODE_EXPLICIT=false
 RESUME_RUN_ID=""
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/submit-batch-job.sh [--profile smoke|contention]
-  scripts/submit-batch-job.sh --resume RUN_ID
+  scripts/submit-batch-job.sh [--profile smoke|contention] [--runai-mode explicit|project-defaults]
+  scripts/submit-batch-job.sh --resume RUN_ID [--runai-mode explicit|project-defaults]
 
 Each new run gets a dedicated PVC, source ConfigMap, and run ID. Resubmit a
 preempted run with --resume RUN_ID to use its PVC and latest full checkpoint.
+The project-defaults mode omits the workload scheduler and Run:ai priority labels
+so the admitted Pod can be inspected for project/namespace defaults.
 USAGE
 }
 
@@ -25,6 +29,12 @@ while (($#)); do
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       PROFILE="$2"
       PROFILE_EXPLICIT=true
+      shift 2
+      ;;
+    --runai-mode)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      RUNAI_MODE="$2"
+      RUNAI_MODE_EXPLICIT=true
       shift 2
       ;;
     --resume)
@@ -46,6 +56,11 @@ done
 
 if [[ "$PROFILE" != "smoke" && "$PROFILE" != "contention" ]]; then
   printf 'Invalid profile %s; choose smoke or contention.\n' "$PROFILE" >&2
+  exit 2
+fi
+
+if [[ "$RUNAI_MODE" != "explicit" && "$RUNAI_MODE" != "project-defaults" ]]; then
+  printf 'Invalid Run:ai mode %s; choose explicit or project-defaults.\n' "$RUNAI_MODE" >&2
   exit 2
 fi
 
@@ -120,6 +135,21 @@ if [[ -n "$RESUME_RUN_ID" ]]; then
     -o jsonpath='{.data.git_commit}')"
   GIT_WORKTREE_DIRTY="$(oc get configmap "$SOURCE_CONFIGMAP" -n "$PROJECT_NAME" \
     -o jsonpath='{.data.git_worktree_dirty}')"
+  STORED_RUNAI_MODE="$(oc get configmap "$SOURCE_CONFIGMAP" -n "$PROJECT_NAME" \
+    -o jsonpath='{.data.runai_mode}')"
+  if [[ -z "$STORED_RUNAI_MODE" ]]; then
+    STORED_RUNAI_MODE="explicit"
+  fi
+  if [[ "$STORED_RUNAI_MODE" != "explicit" && "$STORED_RUNAI_MODE" != "project-defaults" ]]; then
+    printf 'Run %s has no valid saved Run:ai mode in ConfigMap %s.\n' "$RUN_ID" "$SOURCE_CONFIGMAP" >&2
+    exit 1
+  fi
+  if [[ "$RUNAI_MODE_EXPLICIT" == "true" && "$RUNAI_MODE" != "$STORED_RUNAI_MODE" ]]; then
+    printf 'Run %s used Run:ai mode %s; resume it with the same mode.\n' \
+      "$RUN_ID" "$STORED_RUNAI_MODE" >&2
+    exit 1
+  fi
+  RUNAI_MODE="$STORED_RUNAI_MODE"
   if [[ "$STORED_PROFILE" != "smoke" && "$STORED_PROFILE" != "contention" ]]; then
     printf 'Run %s has no valid saved profile in ConfigMap %s.\n' "$RUN_ID" "$SOURCE_CONFIGMAP" >&2
     exit 1
@@ -155,6 +185,7 @@ else
     --from-literal=profile="$PROFILE" \
     --from-literal=git_commit="$GIT_COMMIT" \
     --from-literal=git_worktree_dirty="$GIT_WORKTREE_DIRTY" \
+    --from-literal=runai_mode="$RUNAI_MODE" \
     --dry-run=client -o yaml | oc apply -n "$PROJECT_NAME" -f -
 fi
 
@@ -163,20 +194,35 @@ sed \
   -e "s/__RUN_ID__/${RUN_ID}/g" \
   "$ROOT_DIR/deploy/batch-workspace-pvc.yaml" | oc apply -f -
 
-JOB_NAME="$(sed \
+JOB_TEMPLATE_SED_ARGS=(
   -e "s/__RUN_ID__/${RUN_ID}/g" \
   -e "s/__PROFILE__/${PROFILE}/g" \
   -e "s/__GIT_COMMIT__/${GIT_COMMIT}/g" \
   -e "s/__GIT_WORKTREE_DIRTY__/${GIT_WORKTREE_DIRTY}/g" \
   -e "s/__WORKSPACE_PVC__/${WORKSPACE_PVC}/g" \
   -e "s/__FS_GROUP__/${FS_GROUP}/g" \
-  -e "s/__SOURCE_CONFIGMAP__/${SOURCE_CONFIGMAP}/g" \
+  -e "s/__SOURCE_CONFIGMAP__/${SOURCE_CONFIGMAP}/g"
+)
+if [[ "$RUNAI_MODE" == "project-defaults" ]]; then
+  JOB_TEMPLATE_SED_ARGS+=(
+    -e '/^[[:space:]]*priorityClassName: low$/d'
+    -e '/^[[:space:]]*kai\.scheduler\/preemptibility: preemptible$/d'
+    -e '/^[[:space:]]*schedulerName: runai-scheduler$/d'
+    -e 's/value: runai-scheduler/value: ""/'
+  )
+fi
+
+JOB_NAME="$(sed "${JOB_TEMPLATE_SED_ARGS[@]}" \
   "$ROOT_DIR/deploy/batch-training-job.yaml" | oc create -n "$PROJECT_NAME" -f - \
     -o jsonpath='{.metadata.name}')"
 
 printf 'Created Job %s for run %s in project %s.\n' "$JOB_NAME" "$RUN_ID" "$PROJECT_NAME"
 printf 'Profile: %s; workspace PVC: %s.\n' "$PROFILE" "$WORKSPACE_PVC"
-printf 'Scheduler: runai-scheduler; priority: low; preemptible: true; fsGroup: %s.\n' "$FS_GROUP"
+if [[ "$RUNAI_MODE" == "explicit" ]]; then
+  printf 'Run:ai mode: explicit; scheduler: runai-scheduler; priority: low; preemptible: true; fsGroup: %s.\n' "$FS_GROUP"
+else
+  printf 'Run:ai mode: project-defaults; workload scheduler and priority/preemptibility labels omitted; inspect the admitted Job/Pod; fsGroup: %s.\n' "$FS_GROUP"
+fi
 printf 'Follow logs: oc logs -f job/%s -n %s\n' "$JOB_NAME" "$PROJECT_NAME"
 printf 'After completion or preemption, collect scheduling evidence with:\n'
 printf '  bash scripts/collect-batch-metrics.sh %s\n' "$RUN_ID"

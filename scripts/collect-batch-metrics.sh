@@ -20,8 +20,14 @@ RUN_LABEL="app.kubernetes.io/run-id=$RUN_ID"
 
 JOB_JSON="$(oc get jobs -n "$PROJECT_NAME" -l "$RUN_LABEL" -o json)"
 POD_JSON="$(oc get pods -n "$PROJECT_NAME" -l "$RUN_LABEL" -o json)"
+NAMESPACE_JSON="$(oc get namespace "$PROJECT_NAME" -o json)"
+RUN_SUFFIX="${RUN_ID#run-}"
+SOURCE_CONFIGMAP="team-b-lora-source-${RUN_SUFFIX}"
+if ! SOURCE_CONFIGMAP_JSON="$(oc get configmap "$SOURCE_CONFIGMAP" -n "$PROJECT_NAME" -o json 2>/dev/null)"; then
+  SOURCE_CONFIGMAP_JSON='{}'
+fi
 CLUSTER_SERVER="$(oc whoami --show-server)"
-export RUN_ID REPORT_PATH JOB_JSON POD_JSON CLUSTER_SERVER
+export RUN_ID REPORT_PATH JOB_JSON POD_JSON NAMESPACE_JSON SOURCE_CONFIGMAP_JSON CLUSTER_SERVER
 mkdir -p "$REPORT_DIR"
 
 python3 - <<'PY'
@@ -47,8 +53,25 @@ def seconds_between(start, end):
 
 jobs = json.loads(os.environ["JOB_JSON"]).get("items", [])
 pods = json.loads(os.environ["POD_JSON"]).get("items", [])
+namespace = json.loads(os.environ["NAMESPACE_JSON"]).get("metadata", {})
+namespace_labels = namespace.get("labels", {})
+namespace_annotations = namespace.get("annotations", {})
+source_config = json.loads(os.environ["SOURCE_CONFIGMAP_JSON"]).get("data", {})
 if not jobs:
     raise SystemExit(f"No batch Job found for run {os.environ['RUN_ID']}.")
+
+
+def runai_metadata(metadata):
+    labels = metadata.get("labels", {})
+    annotations = metadata.get("annotations", {})
+    return {
+        "queue": labels.get("runai/queue"),
+        "priority": labels.get("priorityClassName"),
+        "preemptibility": labels.get("kai.scheduler/preemptibility"),
+        "runai_annotations": {
+            key: value for key, value in annotations.items() if key.startswith("runai/")
+        },
+    }
 
 job_records = []
 for job in sorted(jobs, key=lambda item: item["metadata"].get("creationTimestamp", "")):
@@ -57,6 +80,7 @@ for job in sorted(jobs, key=lambda item: item["metadata"].get("creationTimestamp
     job_records.append(
         {
             "name": metadata.get("name"),
+            "runai_settings": runai_metadata(metadata),
             "created_at": metadata.get("creationTimestamp"),
             "start_time": status.get("startTime"),
             "completion_time": status.get("completionTime"),
@@ -95,6 +119,7 @@ for pod in sorted(pods, key=lambda item: item["metadata"].get("creationTimestamp
         {
             "name": metadata.get("name"),
             "phase": status.get("phase"),
+            "runai_settings": runai_metadata(metadata),
             "created_at": pod_created,
             "scheduled_at": scheduled_at,
             "container_started_at": started_at,
@@ -122,6 +147,15 @@ report = {
     "run_id": os.environ["RUN_ID"],
     "collected_at": datetime.now().astimezone().isoformat(),
     "cluster_server": os.environ["CLUSTER_SERVER"],
+    "runai_mode": source_config.get("runai_mode", "legacy-unspecified"),
+    "namespace_runai_mapping": {
+        "labels": {
+            key: value for key, value in namespace_labels.items() if key.startswith("runai/")
+        },
+        "annotations": {
+            key: value for key, value in namespace_annotations.items() if key.startswith("runai/")
+        },
+    },
     "jobs": job_records,
     "pods": pod_records,
 }

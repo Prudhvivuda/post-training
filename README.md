@@ -98,7 +98,7 @@ Deploy this first version inside the **Team B RHOAI Data Science Project**. The 
 
 ### Submit Team B as a batch workload
 
-For the low-SLA batch use case, submit a Kubernetes Job from a local terminal after logging in to `dev06` and creating both project mappings. Each new run receives a unique PVC, source ConfigMap, and run ID, so concurrent jobs do not share their checkpoint workspace. The namespace mapping enforces `runai-scheduler`; the Job also names that scheduler explicitly. Its labels explicitly set Run:ai priority `low` and preemptibility `preemptible`, rather than relying on the workload-type defaults. The launcher reads the namespace's OpenShift supplemental group range and sets the pod `fsGroup` so the dynamically provisioned PVC can be written without running as root:
+For the low-SLA batch use case, submit a Kubernetes Job from a local terminal after logging in to `dev06` and creating both project mappings. Each new run receives a unique PVC, source ConfigMap, and run ID, so concurrent jobs do not share their checkpoint workspace. The default `explicit` mode sets `schedulerName: runai-scheduler` plus Run:ai priority `low` and preemptibility `preemptible` labels. The launcher reads the namespace's OpenShift supplemental group range and sets the pod `fsGroup` so the dynamically provisioned PVC can be written without running as root:
 
 ```bash
 cd /Users/pvuda/Code/post-training/team-b-lora
@@ -112,6 +112,22 @@ For a longer contention workload, choose `contention`:
 ```bash
 bash scripts/submit-batch-job.sh --profile contention
 ```
+
+### Compare project defaults with workload-level settings
+
+To check whether the Team B namespace/project mapping supplies Run:ai settings to a workload without explicit workload-level settings, submit the same smoke profile with `project-defaults` mode after the explicit-mode Job has completed:
+
+```bash
+bash scripts/submit-batch-job.sh --profile smoke --runai-mode project-defaults
+```
+
+This mode renders the same Job while omitting `schedulerName`, `priorityClassName`, and `kai.scheduler/preemptibility` from the Job and Pod template. It leaves the namespace mapping intact and records `runai_mode=project-defaults` in the run ConfigMap. Inspect the admitted Pod's `.spec.schedulerName` and Run:ai labels, then compare the workload in the Run:ai UI. A `runai-scheduler` value on the admitted Pod demonstrates scheduler selection from the integration path; absent priority/preemptibility labels mean the workload is using Run:ai's configured workload-type defaults unless the platform injects values. The evidence collector records the namespace mapping, effective Pod scheduler, workload labels, and submission mode:
+
+```bash
+bash scripts/collect-batch-metrics.sh <run-id>
+```
+
+Run the modes sequentially because each requests one GPU. Resume uses the mode saved with the original run, so a checkpointed run keeps the same workload-level or project-default configuration.
 
 The launcher prints the run ID and PVC name. The Job snapshots the workflow source into a run-specific ConfigMap, creates a 20 GiB run-specific PVC, then installs requirements, creates deterministic data, evaluates the base model, runs LoRA SFT, and prints `metrics.json` to its logs. The run directory includes `run-config.json`, `run-state.json`, `base-evaluation.json`, checkpoints, and final metrics.
 
@@ -135,7 +151,7 @@ This writes `reports/cluster-runs/<run-id>.json`. The collector calculates pod c
 
 ### What this proves
 
-The project is mapped to Run:ai on `dev06`, and the batch manifest targets the Run:ai scheduler with explicit low priority and preemptibility. The Oct 22 run verified Run:ai scheduling, a graceful signal-triggered checkpoint, and manual resume to completion on the same PVC. That validates checkpoint recovery for this workload; it does not prove scheduler-initiated cross-project reclaim. That still requires an authorized in-quota workload in another Run:ai project. The Run:ai dashboard also displayed a cluster prerequisite warning while recognizing and allocating the Team B Job, so the cluster warning needs follow-up before treating the integration as production-ready.
+The project is mapped to Run:ai on `dev06`; the default batch mode targets the Run:ai scheduler with explicit low priority and preemptibility, and `project-defaults` mode is available to inspect what the project integration supplies. The Oct 22 run verified Run:ai scheduling, a graceful signal-triggered checkpoint, and manual resume to completion on the same PVC. That validates checkpoint recovery for this workload; it does not prove scheduler-initiated cross-project reclaim. That still requires a coordinated workload in another Run:ai project. The Run:ai dashboard also displayed a cluster prerequisite warning while recognizing and allocating the Team B Job, so the cluster warning needs follow-up before treating the integration as production-ready.
 
 ## Verified `dev06` run (2026-10-19)
 
@@ -156,7 +172,7 @@ The project is mapped to Run:ai on `dev06`, and the batch manifest targets the R
 - Verified the namespace has label `runai/queue=team-b-lora` and annotation `runai/enforce-scheduler-name=true`; the Run:ai project status is Ready.
 - `deploy/batch-training-job.yaml` requests `runai-scheduler`, labels the Job and its Pod `low` / `preemptible`, and uses the OpenShift namespace-assigned group for writable run-specific PVCs. The container starts in `/workspace` so the non-root process creates its own project directory.
 - The dashboard recognized the Team B Job and showed 1/1 GPU allocated, but also displayed “Prerequisites are missing from cluster ai-dev06.” The historical Oct 19 Workbench and batch runs used `default-scheduler`; neither is evidence for the new mapping or Run:ai scheduling behavior.
-- The currently running RHOAI Notebook Workbench remains on `default-scheduler`; only the batch Job path has been changed and verified with Run:ai. The Workbench was left running to preserve its active session. Include it in a future scheduler comparison only after saving its state and agreeing how an interactive workspace should be prioritized and reclaimed.
+- In the Oct 22 verification, the RHOAI Notebook Workbench was running on `default-scheduler`; only the batch Job path was changed and verified with Run:ai. It was left running to preserve the active session. Recheck its current state before a demo, and include it in a scheduler comparison only after agreeing how an interactive workspace should be prioritized and reclaimed.
 
 ## Verified Run:ai checkpoint recovery (2026-10-22)
 
